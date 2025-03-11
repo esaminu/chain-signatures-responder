@@ -2,13 +2,48 @@ const { ethers } = require("ethers");
 require("dotenv").config();
 const CONTRACT_ABI = require("./abi");
 
-async function deriveSigningKey(
-  chainSignatures,
+function generateRequestId(
+  addr,
+  payload,
   path,
-  predecessor,
-  basePrivateKey
+  keyVersion,
+  chainId,
+  algo,
+  dest,
+  params
 ) {
-  const epsilon = await chainSignatures.deriveEpsilon(path, predecessor);
+  const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+    [
+      "address",
+      "bytes",
+      "string",
+      "uint32",
+      "uint256",
+      "string",
+      "string",
+      "string",
+    ],
+
+    [addr, payload, path, keyVersion, chainId, algo, dest, params]
+  );
+
+  return ethers.keccak256(encoded);
+}
+
+// Constants
+const EPSILON_DERIVATION_PREFIX = "sig.network v1.0.0 epsilon derivation";
+
+function deriveEpsilonEth(requester, path) {
+  chainId = "0x1";
+
+  const derivationPath = `${EPSILON_DERIVATION_PREFIX},${chainId},${requester.toLowerCase()},${path}`;
+  console.log(derivationPath, "<<< derivation path");
+  const hash = ethers.keccak256(ethers.toUtf8Bytes(derivationPath));
+  return BigInt(hash);
+}
+
+async function deriveSigningKey(path, predecessor, basePrivateKey) {
+  const epsilon = deriveEpsilonEth(predecessor, path);
   const privateKeyBigInt = BigInt(basePrivateKey);
   const curveOrder = BigInt(
     "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141"
@@ -86,43 +121,74 @@ async function pollForEvents(chainSignatures, provider, lastBlockProcessed) {
 
     // Process each event
     for (const event of events) {
-      const [requestId, requester, epsilon, payloadHash, path] = event.args;
-
-      console.log("\nNew SignatureRequested event detected!", {
-        requestId: requestId.toString(),
-        requester,
-        epsilon: epsilon.toString(),
-        payloadHash: payloadHash.toString(),
+      const {
+        sender,
+        payload,
+        keyVersion,
+        deposit,
+        chainId,
         path,
+        algo,
+        dest,
+        params,
+      } = event.args;
+
+      const requestId = generateRequestId(
+        sender,
+        payload,
+        path,
+        keyVersion,
+        chainId,
+        algo,
+        dest,
+        params
+      );
+      console.log("\nNew SignatureRequested event detected!", {
+        requestId,
+        sender,
+        payload: payload.toString(),
+        keyVersion: keyVersion.toString(),
+        deposit: deposit.toString(),
+        chainId: chainId.toString(),
+        path,
+        algo,
+        dest,
+        params,
         blockNumber: event.blockNumber,
         transactionHash: event.transactionHash,
       });
 
       try {
-        const derivedPrivateKeyHex = await deriveSigningKey(
-          chainSignatures,
-          path,
-          requester,
+        const basePrivateKey =
           process.env.NETWORK_ID === "testnet"
             ? process.env.PRIVATE_KEY_TESTNET
-            : process.env.PRIVATE_KEY
+            : process.env.PRIVATE_KEY;
+
+        const derivedPrivateKeyHex = await deriveSigningKey(
+          path,
+          sender,
+          basePrivateKey
         );
 
-        console.log(
-          "Message hash (hex):",
-          "0x" + payloadHash.toString(16).padStart(64, "0")
+        console.log("Message hash (hex):", payload);
+        const signature = await signMessage(
+          BigInt(payload),
+          derivedPrivateKeyHex
         );
-        const signature = await signMessage(payloadHash, derivedPrivateKeyHex);
+
         console.log("Generated signature:", signature);
 
         console.log("Submitting signature...");
-        const tx = await chainSignatures.respond(requestId, signature);
+        const tx = await chainSignatures.respond([{ requestId, signature }]);
         const receipt = await tx.wait();
 
         console.log("Signature submitted successfully!");
         console.log("Transaction hash:", receipt.hash);
       } catch (error) {
         console.error("Error processing event:", error);
+        await chainSignatures.respondError([
+          { requestId, errorMessage: error.message },
+        ]);
       }
     }
 
