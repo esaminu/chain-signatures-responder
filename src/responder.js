@@ -203,7 +203,7 @@ async function main() {
   // Validate environment variables
   const requiredEnvVars =
     process.env.NETWORK_ID === "testnet"
-      ? ["PRIVATE_KEY_TESTNET", "RPC_URL_TESTNET", "CONTRACT_ADDRESS_TESTNET"]
+      ? ["PRIVATE_KEY_TESTNET", "INFURA_API_KEY", "CONTRACT_ADDRESS_TESTNET"]
       : ["PRIVATE_KEY", "RPC_URL", "CONTRACT_ADDRESS"];
 
   requiredEnvVars.forEach((varName) => {
@@ -213,10 +213,9 @@ async function main() {
   });
 
   // Connect to provider and contract
-  const provider = new ethers.JsonRpcProvider(
-    process.env.NETWORK_ID === "testnet"
-      ? process.env.RPC_URL_TESTNET
-      : process.env.RPC_URL
+  const provider = new ethers.InfuraProvider(
+    process.env.NETWORK_ID === "testnet" ? "base-sepolia" : "base",
+    process.env.INFURA_API_KEY
   );
 
   const wallet = new ethers.Wallet(
